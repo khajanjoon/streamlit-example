@@ -1,40 +1,201 @@
-import altair as alt
-import numpy as np
-import pandas as pd
-import streamlit as st
+import requests
+import asyncio
+import websockets
+import json
 
-"""
-# Welcome to Streamlit!
+async def connect_to_socket():
+    uri = "wss://socket.india.deltaex.org/"
+    async with websockets.connect(uri) as websocket:
+        # Send the heartbeat message
+        await websocket.send(json.dumps({"type": "enable_heartbeat"}))
+        
+        # Subscribe to channels
+        subscribe_msg = {
+            "type": "subscribe",
+            "payload": {
+                "channels": [
+                    {"name": "v2/product_updates"},
+                    {"name": "announcements"},
+                    {"name": "v2/spot_price", "symbols": [".DEXBTUSD", ".DEETHUSD"]}
+                ]
+            }
+        }
+        await websocket.send(json.dumps({"type":"authv2","payload":{"token":"7ygBbjKWiBdB7XwblKVKnZfMFj1dnz458qNiizq10chfKU0Mhf1"}}))
+        await websocket.send(json.dumps({"type":"subscribe","payload":{"channels":[{"name":"positions","symbols":["all"]},{"name":"orders","symbols":["all"]},{"name":"margins"},{"name":"portfolio_margins"},{"name":"cross_margin"},{"name":"multi_collateral"},{"name":"user_product"}]}}))
+        await websocket.send(json.dumps(subscribe_msg))
+        await websocket.send(json.dumps({"type":"subscribe","payload":{"channels":[{"name":"trading_notifications","symbols":["all"]},{"name":"user_trades","symbols":["all"]}]}}))
 
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:.
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
+        # Listen for incoming messages
+        while True:
+            data = await websocket.recv()
+            data_json = json.loads(data)
+            btc_spot_price = None
+            eth_spot_price = None
 
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+            if data_json.get('type') == 'v2/spot_price' and data_json.get('s') == '.DEXBTUSD':
+                btc_spot_price = data_json.get('p')
+                print("BTC Spot Price:", btc_spot_price)
 
-num_points = st.slider("Number of points in spiral", 1, 10000, 1100)
-num_turns = st.slider("Number of turns in spiral", 1, 300, 31)
+            if data_json.get('type') == 'v2/spot_price' and data_json.get('s') == '.DEETHUSD':
+                eth_spot_price = data_json.get('p')
+                print("ETH Spot Price:", eth_spot_price)
 
-indices = np.linspace(0, 1, num_points)
-theta = 2 * np.pi * num_turns * indices
-radius = indices
+            if data_json['type'] == 'portfolio_margins':
+                # Extract relevant information
+                index_symbol = data_json['index_symbol']
+                positions_upl = data_json['positions_upl']
+                print("Index Symbol:", index_symbol)
+                print("Positions Unrealized Profit/Loss:", positions_upl)
 
-x = radius * np.cos(theta)
-y = radius * np.sin(theta)
+async def fetch_profile_data():
+    while True:
+        # Fetch data from REST API
+        Authorization = '7ygBbjKWiBdB7XwblKVKnZfMFj1dnz458qNiizq10chfKU0Mhf1'
 
-df = pd.DataFrame({
-    "x": x,
-    "y": y,
-    "idx": indices,
-    "rand": np.random.randn(num_points),
-})
+        headers = {
+          'Authorization': Authorization, 
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
+          'Content-Type': 'application/json'
+        }
 
-st.altair_chart(alt.Chart(df, height=700, width=700)
-    .mark_point(filled=True)
-    .encode(
-        x=alt.X("x", axis=None),
-        y=alt.Y("y", axis=None),
-        color=alt.Color("idx", legend=None, scale=alt.Scale()),
-        size=alt.Size("rand", legend=None, scale=alt.Scale(range=[1, 150])),
-    ))
+        r = requests.get('https://cdn.india.deltaex.org/v2/profile', headers=headers)
+        #print("Profile Data:", r.json())
+        
+        # Wait for 60 seconds before fetching again
+        await asyncio.sleep(120)
+
+async def place_target_order(order_type,side,order_product,order_size,stop_order_type,stop_price):
+    # Define the payload
+    payload = {
+        "order_type": order_type,
+        "side": side,
+        "product_id": int(order_product),
+        "stop_order_type": stop_order_type,
+        "stop_price": stop_price,
+        "reduce_only": False,
+        "stop_trigger_method": "mark_price",
+        "size": order_size
+    }
+    print(payload)
+    # Fetch data from REST API
+    Authorization = '7ygBbjKWiBdB7XwblKVKnZfMFj1dnz458qNiizq10chfKU0Mhf1'
+
+    headers = {
+      'Authorization': Authorization, 
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
+      'Content-Type': 'application/json'
+    }
+
+    # Send the POST request with the payload
+    response = requests.post('https://cdn.india.deltaex.org/v2/orders', json=payload, headers=headers)
+    
+    # Check if the request was successful
+    if response.status_code == 200:
+        print("Order placed successfully.")
+    else:
+        print("Failed to place order. Status code:", response.status_code)
+
+        
+async def place_order(order_type,side,order_product_id,order_size,stop_order_type,target_value ):
+    # Define the payload
+    payload = {
+        "order_type": order_type,
+        "side": side,
+        "product_id": int(order_product_id),
+        "reduce_only": False,     
+        "size": order_size
+    }
+    
+    # Fetch data from REST API
+    Authorization = '7ygBbjKWiBdB7XwblKVKnZfMFj1dnz458qNiizq10chfKU0Mhf1'
+
+    headers = {
+      'Authorization': Authorization, 
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
+      'Content-Type': 'application/json'
+    }
+
+    # Send the POST request with the payload
+    response = requests.post('https://cdn.india.deltaex.org/v2/orders', json=payload, headers=headers)
+    
+    # Check if the request was successful
+    if response.status_code == 200:
+        print("Order placed successfully.")
+        await place_target_order("market_order","sell",order_product_id,1,"take_profit_order",target_value )
+    else:
+        print("Failed to place order. Status code:", response.status_code)
+      
+
+async def fetch_position_data():
+    while True:
+        # Fetch data from REST API
+        Authorization = '7ygBbjKWiBdB7XwblKVKnZfMFj1dnz458qNiizq10chfKU0Mhf1'
+
+        headers = {
+          'Authorization': Authorization, 
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
+          'Content-Type': 'application/json'
+        }
+
+        r = requests.get('https://cdn.india.deltaex.org/v2/positions/margined', headers=headers)
+        position_data = r.json()  # Extract JSON data using .json() method
+        #print("Position Data:", position_data)
+        # Extract product_id and realized_pnl from each result
+        # Extract data from each dictionary in the 'result' list
+        for result in position_data["result"]:
+           product_id = result["product_id"]
+           product_symbol = result["product_symbol"]
+           realized_cashflow = result["realized_cashflow"]
+           realized_funding = result["realized_funding"]
+           realized_pnl = result["realized_pnl"]
+           size = result["size"]
+           unrealized_pnl = result["unrealized_pnl"]
+           updated_at = result["updated_at"]
+           user_id = result["user_id"]
+           entry_price = result["entry_price"]
+           mark_price = result["mark_price"]
+           # Print the extracted data
+           print("Product ID:", product_id, 
+            "Product Symbol:", product_symbol, 
+            "Realized Cashflow:", realized_cashflow, 
+            "Realized Funding:", realized_funding, 
+            "Realized PnL:", realized_pnl, 
+            "Size:", size, 
+            "Unrealized PnL:", unrealized_pnl, 
+            "Updated At:", updated_at, 
+            "User ID:", user_id, 
+            "entry_price:", entry_price, 
+            "mark_price:", mark_price)
+
+           print()  # Add an empty line for better readability between each dictionary's data
+
+           # Percentage of entry price
+           percentage = int(size)*.75 # Assuming 10% for demonstration purposes
+           price_value = float(entry_price)-(float(entry_price) * (percentage / 100)) 
+           tick_size = 0.05
+           target = float(entry_price)*2/100+float(entry_price)
+           target_value = round(target / tick_size) * tick_size
+           print(price_value)
+           print()  # Add an empty line for better readability between each dictionary's data
+           if (float(mark_price) < price_value) :
+
+            print("ready to buy")
+            print()  # Add an empty line for better readability between each dictionary's data
+            await place_order("market_order","buy",product_id,1,0,target_value )  
+            print()  # Add an empty line for better readability between each dictionary's data
+   
+        # Wait for 60 seconds before fetching again
+        await asyncio.sleep(60)
+
+async def main():
+    # Run WebSocket connection coroutine
+    #socket_task = asyncio.create_task(connect_to_socket())
+    # Run profile data fetching coroutine
+    profile_task = asyncio.create_task(fetch_profile_data())
+    position_task = asyncio.create_task(fetch_position_data())
+    # Wait for both tasks to complete
+    await asyncio.gather(position_task, profile_task)
+    
+
+# Run the main coroutine
+asyncio.run(main())
